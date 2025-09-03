@@ -99,13 +99,16 @@ if __name__ == '__main__':
 
     sleep(3)
     user_list=get_douyin_msg._get_user_list()
-    # print(len(user_list)
+    print(len(user_list))
+    sleep(1)
     user_list.reverse()
     for user in user_list:
         print(user.child().child().child().text) # 用户名
-        print(user.child(2).child().child().text) # 最新消息
         # 判断是否是新消息 TODO:
         # 是：点击消息
+        sleep(1)
         user.click()
+        sleep(1)
         for item in get_douyin_msg.tab.eles('xpath=//*[@class=\'leadsCsUI-MessageItem\']//*[@class=\'leadsCsUI-Text\']'):
             print(item.text)
+        sleep(1)
