@@ -96,21 +96,16 @@ if __name__ == '__main__':
     # print(get_douyin_msg.get_user_list())
     # print(get_douyin_msg.get_user_list())
     # 先获取到所有的用户列表，然后通过用户名和下面的消息判断是否是新消息，如果是则点击该用户然后获取用户的消息判断是否违规
-    
+
     sleep(3)
     user_list=get_douyin_msg._get_user_list()
-    print(len(user_list))
-    for item in get_douyin_msg.tab.eles('xpath=//*[@class=\'leadsCsUI-MessageItem\']//*[@class=\'leadsCsUI-Text\']'):
-        print(item.text)
-
-    # user_list.reverse()
-    # for user in user_list:
-    #     print(user.child().child().child().text) # 用户名
-    #     print(user.child(2).child().child().text) # 最新消息
-    #     # 判断是否是新消息 TODO:
-    #     # 是：点击消息
-    #     user.click()
-    #     msgs = get_douyin_msg._get_user_msgs()
-    #     sleep(3)
-    #     for item in get_douyin_msg.tab.eles('@@class=leadsCsUI-Text'):
-    #         print(item.text)
+    # print(len(user_list)
+    user_list.reverse()
+    for user in user_list:
+        print(user.child().child().child().text) # 用户名
+        print(user.child(2).child().child().text) # 最新消息
+        # 判断是否是新消息 TODO:
+        # 是：点击消息
+        user.click()
+        for item in get_douyin_msg.tab.eles('xpath=//*[@class=\'leadsCsUI-MessageItem\']//*[@class=\'leadsCsUI-Text\']'):
+            print(item.text)
