@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 from typing import List, Generator, Optional, Tuple, Union, Dict, Any
 from dataclasses import dataclass
+# 导入RapidFuzz库
+from rapidfuzz import fuzz, process
 
 # 保持你原有的 KeyWord 类
 class KeyWord:
@@ -108,63 +110,35 @@ class KeywordMatcher:
 
     def add_regex(self, pattern: str, type: str = "regex", flags: int = 0):
         """添加正则表达式匹配规则"""
-        compiled = re.compile(pattern, flags if self._case_sensitive else flags | re.IGNORECASE)
-        self._regex_patterns.append((compiled, type))
+        try:
+            # 默认添加re.UNICODE标志以更好地支持中文
+            compiled_flags = flags | re.UNICODE
+            if not self._case_sensitive:
+                compiled_flags |= re.IGNORECASE
+            compiled = re.compile(pattern, compiled_flags)
+            self._regex_patterns.append((compiled, type))
+        except re.error as e:
+            print(f"编译正则表达式失败 '{pattern}': {e}")
 
     def _search_regex(self, text: str) -> Generator[MatchResult, None, None]:
         for pattern, r_type in self._regex_patterns:
-            for match in pattern.finditer(text):
-                yield MatchResult(
-                    start=match.start(),
-                    end=match.end() - 1,
-                    keyword=pattern.pattern,
-                    match_type='regex'
-                )
+            try:
+                for match in pattern.finditer(text):
+                    yield MatchResult(
+                        start=match.start(),
+                        end=match.end() - 1,
+                        keyword=pattern.pattern,
+                        match_type='regex'
+                    )
+            except Exception as e:
+                print(f"正则 {pattern.pattern} 匹配出错: {e}")
 
     # ==================== 新增：模糊匹配（编辑距离）====================
-
-    def enable_fuzzy_match(self, max_distance: int = 1):
-        """启用模糊匹配"""
-        self._enable_fuzzy = True
-        self._max_distance = max_distance
-        self._fuzzy_keywords = [kw.keyword for kw in self._keywords]
-
-    def _edit_distance(self, s1: str, s2: str) -> int:
-        """计算编辑距离（Levenshtein Distance）"""
-        if len(s1) < len(s2):
-            return self._edit_distance(s2, s1)
-        if len(s2) == 0:
-            return len(s1)
-        previous_row = list(range(len(s2) + 1))
-        for i, c1 in enumerate(s1):
-            current_row = [i + 1]
-            for j, c2 in enumerate(s2):
-                insertions = previous_row[j + 1] + 1
-                deletions = current_row[j] + 1
-                substitutions = previous_row[j] + (c1 != c2)
-                current_row.append(min(insertions, deletions, substitutions))
-            previous_row = current_row
-        return previous_row[-1]
-
     def _search_fuzzy(self, text: str) -> Generator[MatchResult, None, None]:
-        """在文本中搜索模糊匹配（性能较低，适合小文本）"""
-        words = re.findall(r'\w+', text)
-        for word in words:
-            for kw in self._fuzzy_keywords:
-                if self._edit_distance(word.lower(), kw.lower()) <= self._max_distance:
-                    # 查找在原文中的位置
-                    start = text.lower().find(word.lower())
-                    if start != -1:
-                        end = start + len(word) - 1
-                        # 找到对应的 KeyWord 对象
-                        matched_kw = next((k for k in self._keywords if k.keyword == kw), None)
-                        if matched_kw:
-                            yield MatchResult(
-                                start=start,
-                                end=end,
-                                keyword=matched_kw,
-                                match_type='fuzzy'
-                            )
+        """使用RapidFuzz在文本中搜索模糊匹配"""
+
+
+        
 
     # ==================== 新增：持久化 ====================
 
@@ -220,22 +194,46 @@ class KeywordMatcher:
         """统一搜索：精确 + 正则 + 模糊"""
         # 1. 精确匹配
         search_text = text if self._case_sensitive else text.lower()
-        for end_index, keyword_id in self._automaton.iter(search_text):
-            keyword_obj = self._id_to_keyword[keyword_id]
-            start_index = end_index - len(keyword_obj.keyword) + 1
-            yield MatchResult(
-                start=start_index,
-                end=end_index,
-                keyword=keyword_obj,
-                match_type='exact'
-            )
+        try:
+            for end_index, keyword_id in self._automaton.iter(search_text):
+                keyword_obj = self._id_to_keyword[keyword_id]
+                # 计算实际文本中的起始位置
+                # 注意：这里在不区分大小写时需要特殊处理，因为search_text是小写的
+                if not self._case_sensitive:
+                    # 找到原始文本中对应的位置
+                    keyword_lower = keyword_obj.keyword.lower()
+                    # 从end_index - len(keyword_lower) + 1位置开始向前找
+                    start_pos = end_index - len(keyword_lower) + 1
+                    # 确保在原始文本中正确匹配
+                    while start_pos >= 0:
+                        if text[start_pos:end_index+1].lower() == keyword_lower:
+                            start_index = start_pos
+                            break
+                        start_pos -= 1
+                else:
+                    start_index = end_index - len(keyword_obj.keyword) + 1
+
+                yield MatchResult(
+                    start=start_index,
+                    end=end_index,
+                    keyword=keyword_obj,
+                    match_type='exact'
+                )
+        except Exception as e:
+            print(f"精确匹配出错: {e}")
 
         # 2. 正则匹配
-        yield from self._search_regex(text)
+        try:
+            yield from self._search_regex(text)
+        except Exception as e:
+            print(f"正则匹配出错: {e}")
 
         # 3. 模糊匹配（较慢，可选）
         if self._enable_fuzzy:
-            yield from self._search_fuzzy(text)
+            try:
+                yield from self._search_fuzzy(text)
+            except Exception as e:
+                print(f"模糊匹配出错: {e}")
 
     def contains_any(self, text: str) -> bool:
         try:
@@ -280,31 +278,43 @@ if __name__ == "__main__":
     kw1 = KeyWord("python", "lang")
     kw2 = KeyWord("北京", "city")
     matcher.add_keywords([kw1, kw2])
+    print(f"添加的关键词: {matcher._keywords}")
 
     # === 2. 添加正则 ===
-    matcher.add_regex(r"\b\d{3}-\d{3}-\d{4}\b", "phone")  # 匹配电话
-    matcher.add_regex(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "email")
+    # 优化正则表达式，移除可能导致问题的\b边界（在中文环境中可能不可靠）
+    matcher.add_regex(r"\d{3}-\d{3}-\d{4}", "phone")  # 匹配电话
+    # 修复邮箱正则，移除|字符（它在字符类中被当作普通字符）
+    matcher.add_regex(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "email")
+    print(f"添加的正则表达式: {[(p.pattern, t) for p, t in matcher._regex_patterns]}")
 
     # === 3. 启用模糊匹配 ===
     matcher.enable_fuzzy_match(max_distance=1)
+    print(f"模糊匹配启用状态: {matcher._enable_fuzzy}, 模糊关键词: {matcher._fuzzy_keywords}")
 
     # === 4. 构建 ===
     matcher.build()
 
     # === 5. 搜索 ===
     text = "我的号码是123-456-7890，邮箱是test@example.com，我爱pyhton和北京！"
+    print(f"测试文本: {text}")
 
-    for match in matcher.search(text):
-        print(f"[{match.match_type}] '{match.keyword}' at {match.start}-{match.end}")
+    print("\n搜索结果:")
+    matches = list(matcher.search(text))
+    if not matches:
+        print("未找到任何匹配")
+    else:
+        for match in matches:
+            # 获取实际匹配的文本片段用于调试
+            matched_text = text[match.start:match.end+1]
+            print(f"[{match.match_type}] '{match.keyword}' at {match.start}-{match.end} → '{matched_text}'")
 
-    # 输出：
-    # [exact] '北京' at 30-31
-    # [regex] '123-456-7890' at 5-18
-    # [regex] 'test@example.com' at 21-38
-    # [fuzzy] 'python' at 28-33  ← 注意：pyhton → python
+    # === 6. 测试替换功能 ===
+    replaced_text = matcher.replace(text)
+    print(f"\n替换后的文本: {replaced_text}")
 
-    # === 6. 持久化 ===
+    # === 7. 持久化 ===
     matcher.save("keyword_matcher.pkl")
+    print("\n已保存到 keyword_matcher.pkl")
 
     # --- 重启后 ---
     # new_matcher = KeywordMatcher()

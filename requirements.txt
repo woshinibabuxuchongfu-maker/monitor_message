@@ -3,3 +3,4 @@ pymysql
 cachetools
 sqlite3py
 pyahocorasick
+rapidfuzz
