@@ -60,8 +60,27 @@ class GetDouyinMsg:
             print(f"获取用户列表失败: {e}")
             return False
 
+    def input_phone_number_and_click_get_code(self,phone_number:str):
+        """输入手机号并点击获取验证码"""
+        try:
+            self.tab.ele('@@name=normal-input').input(phone_number)
+            self.tab.ele('@text()=获取验证码').click()
+        except Exception as e:
+            print(f"输入手机号并点击获取验证码失败: {e}")
+            return False
+
+    def input_verify_code_and_click_login(self,code:str):
+        """输入验证码并点击登录"""
+        try:
+            self.tab.ele('@@name=button-input').input(code) # 输出验证码
+            self.tab.ele('@@style=width: 253px; height: 48px;').click() # 点击登录
+        except Exception as e:
+            print(f"输入验证码并点击登录失败: {e}")
+            return False
+
 
 if __name__ == '__main__':
     get_douyin_msg = GetDouyinMsg()
     get_douyin_msg.set_url('https://e.douyin.com/site/douyin-mp/login')
-    print(get_douyin_msg.get_user_list())
+    get_douyin_msg.input_phone_number_and_click_get_code("19127619377")
+    # print(get_douyin_msg.get_user_list())

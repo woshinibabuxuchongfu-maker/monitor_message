@@ -1,3 +1,5 @@
 DrissionPage
 pymysql
 cachetools
+sqlite3py
+pyahocorasick
