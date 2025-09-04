@@ -4,3 +4,4 @@ cachetools
 sqlite3py
 pyahocorasick
 rapidfuzz
+PyQt5

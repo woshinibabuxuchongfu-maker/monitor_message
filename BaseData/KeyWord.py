@@ -1,3 +1,6 @@
+from datetime import datetime
+
+
 class KeyWord:
     def __init__(self, keyword: str, type: str = 'keyword'):
         self.id = None
