@@ -1,6 +1,0 @@
-DrissionPage
-pymysql
-cachetools
-pyahocorasick
-rapidfuzz
-PyQt5
