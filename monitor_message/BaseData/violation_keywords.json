@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "keyword": "打压",
+    "type": "keyword",
+    "created_at": "2025-09-04 13:27:49"
+  },
+  {
+    "id": 2,
+    "keyword": "虐待",
+    "type": "keyword",
+    "created_at": "2025-09-04 13:27:57"
+  }
+]
