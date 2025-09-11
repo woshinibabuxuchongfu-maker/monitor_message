@@ -4,5 +4,7 @@
   "user": "zmonv",
   "password": "rpa@2025",
   "database": "test_zmonv_rpa",
-  "charset": "utf8mb4"
+  "charset": "utf8mb4",
+  "pool_size": 10,
+  "max_overflow": 5
 }

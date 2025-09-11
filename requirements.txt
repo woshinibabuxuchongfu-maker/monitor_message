@@ -1,7 +1,7 @@
 DrissionPage
 pymysql
+PyMySQL[rsa]
 cachetools
-sqlite3py
 pyahocorasick
 rapidfuzz
 PyQt5

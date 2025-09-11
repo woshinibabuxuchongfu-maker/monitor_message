@@ -9,7 +9,7 @@ from PyQt5.QtGui import QFont, QIcon
 
 # 导入项目模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from database.mysql_db import MySQLKeywordDB
+from database.mysql_pool_db import MySQLKeywordDBPool
 from config.database_config import DatabaseConfig
 
 from PyQt5.QtWidgets import QWidget
@@ -123,7 +123,7 @@ class DatabaseConfigDialog(QDialog):
         
         try:
             # 创建临时数据库实例进行测试
-            test_db = MySQLKeywordDB(config)
+            test_db = MySQLKeywordDBPool(config)
             if test_db.test_connection():
                 self.status_label.setText("状态: 连接成功")
                 self.status_label.setStyleSheet("color: green;")
@@ -177,7 +177,7 @@ class DatabaseManagerWidget(QWidget):
             return
 
         try:
-            self.db = MySQLKeywordDB(config)
+            self.db = MySQLKeywordDBPool(config)
             if self.db.test_connection():
                 self.connection_status.setText("状态: 已连接")
                 self.connection_status.setStyleSheet("color: green; font-weight: bold;")
@@ -223,6 +223,19 @@ class DatabaseManagerWidget(QWidget):
         
         connection_group.setLayout(connection_layout)
         
+        # 数据库统计信息区域
+        stats_group = QGroupBox("数据库统计")
+        stats_layout = QVBoxLayout()
+        
+        self.stats_table = QTableWidget()
+        self.stats_table.setColumnCount(2)
+        self.stats_table.setHorizontalHeaderLabels(["统计项目", "数值"])
+        self.stats_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.stats_table.setMaximumHeight(200)
+        
+        stats_layout.addWidget(self.stats_table)
+        stats_group.setLayout(stats_layout)
+        
         # 数据库信息区域
         info_group = QGroupBox("数据库信息")
         info_layout = QVBoxLayout()
@@ -231,7 +244,7 @@ class DatabaseManagerWidget(QWidget):
         self.info_table.setColumnCount(2)
         self.info_table.setHorizontalHeaderLabels(["项目", "值"])
         self.info_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.info_table.setMaximumHeight(200)
+        self.info_table.setMaximumHeight(150)
         
         info_layout.addWidget(self.info_table)
         info_group.setLayout(info_layout)
@@ -257,6 +270,7 @@ class DatabaseManagerWidget(QWidget):
         operation_group.setLayout(operation_layout)
         
         layout.addWidget(connection_group)
+        layout.addWidget(stats_group)
         layout.addWidget(info_group)
         layout.addWidget(operation_group)
         
@@ -284,7 +298,7 @@ class DatabaseManagerWidget(QWidget):
     def connect_database(self):
         """连接数据库"""
         try:
-            self.db = MySQLKeywordDB(self.current_config)
+            self.db = MySQLKeywordDBPool(self.current_config)
             if self.db.test_connection():
                 self.connection_status.setText("状态: 已连接")
                 self.connection_status.setStyleSheet("color: green; font-weight: bold;")
@@ -308,6 +322,7 @@ class DatabaseManagerWidget(QWidget):
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.info_table.setRowCount(0)
+        self.stats_table.setRowCount(0)
     
     def refresh_info(self):
         """刷新数据库信息"""
@@ -315,21 +330,41 @@ class DatabaseManagerWidget(QWidget):
             return
         
         try:
+            # 更新数据库统计信息
             stats = self.db.get_statistics()
             
-            info_data = [
+            stats_data = [
                 ("关键词总数", str(stats.get('total_keywords', 0))),
                 ("检测记录总数", str(stats.get('total_detections', 0))),
                 ("今日检测数", str(stats.get('today_detections', 0))),
-                ("数据库", self.current_config.get('database', '')),
-                ("主机", self.current_config.get('host', '')),
-                ("端口", str(self.current_config.get('port', ''))),
             ]
             
             # 添加按类型统计的关键词
             keywords_by_type = stats.get('keywords_by_type', {})
             for keyword_type, count in keywords_by_type.items():
-                info_data.append((f"关键词类型({keyword_type})", str(count)))
+                stats_data.append((f"关键词类型({keyword_type})", str(count)))
+            
+            self.stats_table.setRowCount(len(stats_data))
+            for i, (key, value) in enumerate(stats_data):
+                self.stats_table.setItem(i, 0, QTableWidgetItem(key))
+                self.stats_table.setItem(i, 1, QTableWidgetItem(value))
+            
+            # 更新数据库连接信息
+            info_data = [
+                ("数据库", self.current_config.get('database', '')),
+                ("主机", self.current_config.get('host', '')),
+                ("端口", str(self.current_config.get('port', ''))),
+                ("字符集", self.current_config.get('charset', '')),
+            ]
+            
+            # 添加连接池状态信息
+            pool_status = self.db.get_pool_status()
+            if pool_status:
+                info_data.extend([
+                    ("连接池大小", str(pool_status.get('pool_size', 0))),
+                    ("最大连接数", str(pool_status.get('max_pool_size', 0))),
+                    ("当前连接数", str(pool_status.get('total_connections', 0))),
+                ])
             
             self.info_table.setRowCount(len(info_data))
             for i, (key, value) in enumerate(info_data):

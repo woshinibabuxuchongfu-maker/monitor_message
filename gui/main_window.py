@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-主窗口
-"""
 
 import sys
 import os
@@ -47,6 +42,9 @@ class MainWindow(QMainWindow):
         # 创建标签页
         self.tab_widget = QTabWidget()
 
+        # 系统状态标签页
+        self.status_widget = SystemStatusWidget()
+        self.tab_widget.addTab(self.status_widget, "系统状态")
 
         # 消息检测标签页
         self.detection_widget = MessageDetectionWidget()
@@ -55,17 +53,11 @@ class MainWindow(QMainWindow):
         # 关键词管理标签页
         self.keyword_widget = KeywordManagerWidget()
         self.tab_widget.addTab(self.keyword_widget, "关键词管理")
-        
 
-        
         # 数据库管理标签页
         self.database_widget = DatabaseManagerWidget()
         self.tab_widget.addTab(self.database_widget, "数据库管理")
-        
-        # 系统状态标签页
-        self.status_widget = SystemStatusWidget()
-        self.tab_widget.addTab(self.status_widget, "系统状态")
-        
+
         # 布局
         layout = QVBoxLayout()
         layout.addWidget(self.tab_widget)

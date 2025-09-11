@@ -5,7 +5,7 @@
 包含所有数据库相关操作
 """
 
-from .mysql_db import MySQLKeywordDB
+from .mysql_pool_db import MySQLKeywordDBPool
 from .sqlite_db import KeywordDB
 
-__all__ = ['MySQLKeywordDB', 'KeywordDB']
+__all__ = ['MySQLKeywordDBPool', 'KeywordDB']

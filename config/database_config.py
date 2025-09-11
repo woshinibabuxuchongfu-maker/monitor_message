@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-数据库配置管理
-"""
 
 import os
 import json
@@ -47,7 +42,10 @@ class DatabaseConfig:
             "user": "zmonv",
             "password": "rpa@2025",
             "database": "test_zmonv_rpa",
-            "charset": "utf8mb4"
+            "charset": "utf8mb4",
+            # 连接池配置
+            "pool_size": 10,
+            "max_overflow": 5
         }
     
     @classmethod
@@ -66,6 +64,21 @@ class DatabaseConfig:
                 return False, "端口号必须在1-65535之间"
         except ValueError:
             return False, "端口号必须是数字"
+        
+        # 验证连接池参数
+        try:
+            pool_size = int(config.get("pool_size", 10))
+            if pool_size < 1 or pool_size > 100:
+                return False, "连接池大小必须在1-100之间"
+        except ValueError:
+            return False, "连接池大小必须是数字"
+        
+        try:
+            max_overflow = int(config.get("max_overflow", 5))
+            if max_overflow < 0 or max_overflow > 50:
+                return False, "最大溢出连接数必须在0-50之间"
+        except ValueError:
+            return False, "最大溢出连接数必须是数字"
         
         return True, "配置验证通过"
     

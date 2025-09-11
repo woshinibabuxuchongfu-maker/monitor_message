@@ -134,11 +134,34 @@ class KeywordMatcher:
                 print(f"正则 {pattern.pattern} 匹配出错: {e}")
 
     # ==================== 新增：模糊匹配（编辑距离）====================
+    def enable_fuzzy_match(self, max_distance: int = 1):
+        """启用模糊匹配功能"""
+        self._enable_fuzzy = True
+        self._max_distance = max_distance
+        # 将现有关键词加入模糊词库
+        self._fuzzy_keywords = [kw.keyword for kw in self._keywords]
+    
     def _search_fuzzy(self, text: str) -> Generator[MatchResult, None, None]:
         """使用RapidFuzz在文本中搜索模糊匹配"""
-
-
+        if not self._fuzzy_keywords:
+            return
         
+        # 将文本分割成单词进行模糊匹配
+        words = text.split()
+        for i, word in enumerate(words):
+            for keyword in self._fuzzy_keywords:
+                # 计算编辑距离
+                distance = fuzz.ratio(word, keyword)
+                if distance >= (100 - self._max_distance * 20):  # 简单的相似度阈值
+                    # 找到在原文中的位置
+                    start_pos = text.find(word)
+                    if start_pos != -1:
+                        yield MatchResult(
+                            start=start_pos,
+                            end=start_pos + len(word) - 1,
+                            keyword=keyword,
+                            match_type='fuzzy'
+                        )
 
     # ==================== 新增：持久化 ====================
 

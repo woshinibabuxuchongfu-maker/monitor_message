@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-消息违规检测系统 - 主启动脚本
-"""
-
 import sys
 import os
 import traceback
@@ -42,7 +36,7 @@ def ensure_directories():
     """确保必要的目录存在"""
     directories = [
         "BaseData",
-        "Test", 
+        "function",
         "logs",
         "data",
         "config"

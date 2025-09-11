@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-关键词管理组件
-"""
 
 import sys
 import os
@@ -15,7 +10,7 @@ from PyQt5.QtCore import Qt
 # 导入项目模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.sqlite_db import KeywordDB
-from database.mysql_db import MySQLKeywordDB
+from database.mysql_pool_db import MySQLKeywordDBPool
 from config.database_config import DatabaseConfig
 from config.system_config import Config
 
@@ -112,7 +107,7 @@ class KeywordManagerWidget(QWidget):
         if self.use_mysql:
             config = DatabaseConfig.load_config()
             if config:
-                self.db = MySQLKeywordDB(config)
+                self.db = MySQLKeywordDBPool(config)
             else:
                 QMessageBox.information(self, "提示", "请先配置MySQL数据库连接")
         else:
