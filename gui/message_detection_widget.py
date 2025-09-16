@@ -17,7 +17,6 @@ from function.GetDouyinMsg import GetDouyinMsg
 from config.system_config import Config
 from database.batch_saver import get_batch_saver, stop_batch_saver
 
-
 class MessageDetectionThread(QThread):
     """消息检测线程"""
     message_detected = pyqtSignal(dict)  # 检测到违规消息时发出信号
