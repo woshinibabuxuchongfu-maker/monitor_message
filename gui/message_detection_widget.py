@@ -1,11 +1,10 @@
-
 import sys
 import os
 import time
 from datetime import datetime
 from typing import List, Dict
-from concurrent.futures import ThreadPoolExecutor
-from collections import deque
+
+from DrissionPage._functions.by import By
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QLineEdit, QPushButton, QLabel, QTableWidget,
                              QTableWidgetItem, QHeaderView, QMessageBox)
@@ -16,6 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from function.Filter import KeywordMatcher
 from function.GetDouyinMsg import GetDouyinMsg
 from config.system_config import Config
+from database.batch_saver import get_batch_saver, stop_batch_saver
 
 
 class MessageDetectionThread(QThread):
@@ -28,215 +28,239 @@ class MessageDetectionThread(QThread):
         self.matcher = matcher
         self.douyin_msg = douyin_msg
         self.running = False
-        # 异步数据库写入线程池（避免阻塞检测循环）
-        try:
-            max_workers = getattr(Config, 'DB_SAVE_MAX_WORKERS', 3)
-        except Exception:
-            max_workers = 3
-        self._executor = ThreadPoolExecutor(max_workers=max_workers)
-        self._pending_futures = deque()
-        try:
-            self._max_pending = getattr(Config, 'DB_SAVE_MAX_PENDING', 100)
-        except Exception:
-            self._max_pending = 100
-        # 线程内初始化并复用数据库连接池
-        try:
-            from database.mysql_pool_db import MySQLKeywordDBPool
-            from config.database_config import DatabaseConfig
-            config = DatabaseConfig.load_config() or DatabaseConfig.get_default_config()
-            self._db = MySQLKeywordDBPool(config)
-            # 可选轻量健康检查（不在每次保存时重复）
-            try:
-                if not self._db.test_connection():
-                    self._db = None
-                    self.status_update.emit("数据库连接不可用，将跳过数据库写入")
-            except Exception:
-                self._db = None
-                self.status_update.emit("数据库健康检查失败，将跳过数据库写入")
-        except Exception:
-            self._db = None
-            # 不抛出，允许线程继续运行
-
+        # 首次进入监控时先进行一次刷新并等待
+        self._initial_refresh_done = False
+        # 初始化批量保存器
+        self.batch_saver = None
+        self._init_batch_saver()
+        
     def run(self):
         self.running = True
         self.status_update.emit("开始监控消息...")
+        
+        # 刷新与批处理控制
+        last_refresh_ts = 0
+        REFRESH_INTERVAL = 20   # 秒
+        BATCH_SIZE = 8          # 每批处理的用户数量
+        PER_USER_DWELL = 1      # 点击后页面稳定等待（秒）
+        PER_USER_CYCLE = 3      # 单个用户完整处理耗时目标（秒）
 
         while self.running:
             try:
-                # 获取当前页用户列表；若为空则刷新后重试一轮
-                user_list = self.douyin_msg._get_user_list()
-                if not user_list:
-                    self.status_update.emit("未获取到用户列表，尝试刷新页面...")
+                # 检查浏览器和标签页是否有效
+                if not self.douyin_msg.is_connected():
+                    self.status_update.emit("浏览器连接已断开，请重新设置URL")
+                    time.sleep(5)
+                    continue
+                
+                # 首次启动：先刷新浏览器并等待5秒，再获取列表
+                if not self._initial_refresh_done:
                     try:
-                        if self.douyin_msg.refresh_and_wait_user_list(timeout=10):
-                            user_list = self.douyin_msg._get_user_list()
-                    except Exception:
-                        pass
+                        self.status_update.emit("开始监控，先刷新页面并等待5秒")
+                        self.douyin_msg.refresh_page()
+                        time.sleep(5)
+                        self.douyin_msg.wait_for_user_list(timeout=10)
+                    except Exception as e:
+                        self.status_update.emit(f"首次刷新失败: {str(e)}")
+                    finally:
+                        self._initial_refresh_done = True
 
-                if user_list:
+                # 定期刷新页面
+                now_ts = time.time()
+                if now_ts - last_refresh_ts >= REFRESH_INTERVAL:
+                    try:
+                        # 只要刷新浏览器，就等待5秒，然后等待列表条件通过
+                        self.douyin_msg.refresh_page()
+                        time.sleep(5)
+                        self.douyin_msg.wait_for_user_list(timeout=10)
+                        self.status_update.emit("定时刷新页面（20秒），已等待5秒并确认列表加载")
+                    except Exception as e:
+                        self.status_update.emit(f"页面刷新失败: {str(e)}")
+                    last_refresh_ts = now_ts
+                
+                # 获取用户列表
+                try:
+                    # 若刚刷新或首次进入，确保等待用户列表加载完成并再次查询
+                    if not self.douyin_msg.wait_for_user_list(timeout=10):
+                        self.status_update.emit("用户列表加载超时，重试中...")
+                        time.sleep(3)
+                    user_list = self.douyin_msg._get_user_list()
+                    if not user_list:
+                        self.status_update.emit("未找到用户列表，等待页面加载...")
+                        time.sleep(3)
+                        continue
+                    
+                    # 添加调试信息
+                    user_names = []
                     for user in user_list:
-                        if not self.running:
-                            break
-
-                        # 提取用户名
                         try:
                             user_name = user.child().child().child().text
-                        except Exception:
-                            user_name = "未知用户"
-
+                            if user_name:
+                                user_names.append(user_name)
+                        except:
+                            continue
+                    
+                    self.status_update.emit(f"当前用户列表: {', '.join(user_names[:8])}{'...' if len(user_names) > 8 else ''}")
+                    # 本次只处理前 BATCH_SIZE 个用户，通过频繁刷新获取更多
+                    user_batch = user_list[:BATCH_SIZE]
+                    
+                except Exception as e:
+                    self.status_update.emit(f"获取用户列表失败: {str(e)}")
+                    time.sleep(5)
+                    continue
+                
+                # 遍历本批用户
+                for user in user_batch:
+                    if not self.running:
+                        break
+                    
+                    try:
+                        # 获取用户名
+                        user_name = user.child().child().child().text
+                        if not user_name:
+                            continue
+                        
                         self.status_update.emit(f"检查用户: {user_name}")
-
-                        # 点击用户并短暂等待对话加载
+                        
+                        # 点击用户获取消息
                         try:
                             user.click()
-                        except Exception:
+                            time.sleep(PER_USER_DWELL)  # 每个用户停留固定时长
+                            
+                            # 获取抖音ID（点击后从剪贴板读取）
+                            douyin_id = self.get_douyin_id()
+                            if douyin_id:
+                                self.status_update.emit(f"获取到抖音ID: {douyin_id}")
+                            else:
+                                self.status_update.emit("未获取到抖音ID")
+                                
+                        except Exception as e:
+                            self.status_update.emit(f"点击用户失败: {str(e)}")
                             continue
-
+                        
+                        start_ts = time.time()
+                        # 获取完整对话内容
                         try:
-                            for _ in range(6):
-                                if not self.running:
-                                    break
-                                try:
-                                    if self.douyin_msg.tab.eles("xpath=//*[@class='leadsCsUI-MessageItem']"):
-                                        break
-                                except Exception:
-                                    pass
-                                time.sleep(0.1)
-                        except Exception:
-                            pass
-
-                        # 获取对话、保存数据库并检测违规
-                        conversation_data = self._thr_get_conversation_data(user_name)
-                        if conversation_data:
-                            self._thr_save_conversation_to_db(user_name, conversation_data)
-                            self._thr_detect_violations_in_conversation(user_name, conversation_data)
-
-                # 当前页处理完，刷新以获取下一页（每页仅显示约8个）
+                            conversation_data = self._thr_get_conversation_data(user_name)
+                            if conversation_data:
+                                # 使用批量保存器保存对话到数据库（包含抖音ID）
+                                self._thr_save_conversation_to_batch(user_name, conversation_data, douyin_id)
+                                
+                                # 检测违规内容
+                                self._thr_detect_violations_in_conversation(user_name, conversation_data)
+                                
+                                # 抖音ID已通过批量保存器一起保存，无需单独处理
+                                if douyin_id:
+                                    self.status_update.emit(f"✓ 抖音ID已获取: {user_name} -> {douyin_id}")
+                                else:
+                                    self.status_update.emit(f"⚠ 用户 {user_name} 未获取到抖音ID")
+                                
+                                # 立即刷新批量保存器，确保数据及时保存
+                                if self.batch_saver:
+                                    flush_stats = self.batch_saver.flush_all()
+                                    self.status_update.emit(f"批量保存状态: {flush_stats}")
+                                    if flush_stats.get('conversations_saved', 0) > 0:
+                                        self.status_update.emit(f"已保存 {user_name} 的对话数据")
+                                    else:
+                                        self.status_update.emit(f"用户 {user_name} 数据已缓存，等待批量保存")
+                        except Exception as e:
+                            self.status_update.emit(f"处理对话失败: {str(e)}")
+                            continue
+                        finally:
+                            # 保证单个用户处理总耗时不小于 PER_USER_CYCLE 秒
+                            elapsed = time.time() - start_ts
+                            if elapsed < PER_USER_CYCLE:
+                                time.sleep(PER_USER_CYCLE - elapsed)
+                                
+                    except Exception as e:
+                        # 单个用户处理失败，继续处理下一个用户
+                        self.status_update.emit(f"处理用户时出错: {str(e)}")
+                        continue
+                
+                # 一批处理完成后，立即刷新浏览器以获取更多用户
                 try:
-                    self.status_update.emit("刷新页面以加载更多用户...")
-                    self.douyin_msg.refresh_and_wait_user_list(timeout=10)
-                except Exception:
-                    pass
-
-                time.sleep(Config.DETECTION_INTERVAL)
-
+                    self.status_update.emit("本批处理完成，刷新页面获取更多用户")
+                    
+                    # 批处理完成后强制保存所有缓存的数据
+                    if self.batch_saver:
+                        flush_stats = self.batch_saver.flush_all()
+                        if flush_stats.get('conversations_saved', 0) > 0:
+                            self.status_update.emit(f"批量保存完成: {flush_stats.get('conversations_saved', 0)} 个用户对话")
+                    
+                    self.douyin_msg.refresh_page()
+                    time.sleep(5)
+                    self.douyin_msg.wait_for_user_list(timeout=10)
+                except Exception as e:
+                    self.status_update.emit(f"批处理后刷新失败: {str(e)}")
+                
             except Exception as e:
-                self.status_update.emit(f"检测错误: {str(e)}")
+                self.status_update.emit(f"检测循环错误: {str(e)}")
                 time.sleep(10)
     
+    def _init_batch_saver(self):
+        """初始化批量保存器"""
+        try:
+            from database.mysql_pool_db import MySQLKeywordDBPool
+            from config.database_config import DatabaseConfig
+            
+            config = DatabaseConfig.load_config() or DatabaseConfig.get_default_config()
+            db = MySQLKeywordDBPool(config)
+            
+            if db.test_connection():
+                self.batch_saver = get_batch_saver(db, batch_size=5, flush_interval=10)
+                print("[批量保存] 批量保存器初始化成功")
+            else:
+                print("[批量保存] 数据库连接失败，批量保存器初始化失败")
+        except Exception as e:
+            print(f"[批量保存] 批量保存器初始化失败: {e}")
 
-    # def run(self):
-    #     self.running = True
-    #     self.status_update.emit("开始监控消息...")
-
-    #     while self.running:
-    #         try:
-
-    #             try:
-    #                 self.status_update.emit("刷新浏览器...")
-    #                 self.douyin_msg.refresh_page()
-    #                 # 等待页面刷新完成（原3秒等待移到这里）
-    #                 time.sleep(3)
-
-    #                 user_list = self.douyin_msg._get_user_list()
-    #                 if not user_list:
-    #                     self.status_update.emit("未获取到用户列表，跳过本轮")
-    #                     time.sleep(1)
-    #                     continue
-    #                 # 调试：显示前8个用户名
-    #                 user_names = []
-    #                 for user in user_list:
-    #                     try:
-    #                         name = user.child().child().child().text
-    #                         if name:
-    #                             user_names.append(name)
-    #                     except:
-    #                         continue
-    #                 self.status_update.emit(
-    #                     f"当前用户: {', '.join(user_names[:8])}{'...' if len(user_names) > 8 else ''}")
-
-    #             except Exception as e:
-    #                 self.status_update.emit(f"获取用户列表异常: {str(e)}")
-    #                 time.sleep(1)  # 不sleep太久，保持主循环节奏
-    #                 continue
-
-    #             # >>> 遍历用户（保持原节奏） <<<
-    #             processed_users = set()
-    #             for user in user_list:
-    #                 if not self.running:
-    #                     break
-
-    #                 try:
-    #                     user_name = user.child().child().child().text
-    #                     if not user_name or user_name in processed_users:
-    #                         continue
-
-    #                     processed_users.add(user_name)
-    #                     self.status_update.emit(f"检查用户: {user_name}")
-
-    #                     # 点击用户
-    #                     try:
-    #                         user.click()
-    #                         # 减少固定等待，改为短轮询等待对话加载，最多约0.6秒
-    #                         try:
-    #                             for _ in range(6):  # 6 * 0.1s = 0.6s 上限
-    #                                 if not self.running:
-    #                                     break
-    #                                 try:
-    #                                     # 检测是否已出现消息条目
-    #                                     if self.douyin_msg.tab.eles("xpath=//*[@class='leadsCsUI-MessageItem']"):
-    #                                         break
-    #                                 except Exception:
-    #                                     pass
-    #                                 time.sleep(0.1)
-    #                         except Exception:
-    #                             # 安全降级，不影响主流程
-    #                             pass
-    #                     except Exception as e:
-    #                         self.status_update.emit(f"点击用户失败: {str(e)}")
-    #                         continue
-
-    #                     # 获取对话数据（你原来的逻辑）
-    #                     try:
-    #                         conversation_data = self._thr_get_conversation_data(user_name)
-    #                         if conversation_data:
-    #                             self._thr_save_conversation_to_db(user_name, conversation_data)
-    #                             self._thr_detect_violations_in_conversation(user_name, conversation_data)
-    #                     except Exception as e:
-    #                         self.status_update.emit(f"处理对话失败: {str(e)}")
-    #                         continue
-
-    #                 except Exception as e:
-    #                     self.status_update.emit(f"处理用户 {user_name} 时出错: {str(e)}")
-    #                     continue
-
-    #             # >>> 主循环节奏控制（保持原样） <<<
-    #             time.sleep(Config.DETECTION_INTERVAL)
-
-    #         except Exception as e:
-    #             self.status_update.emit(f"检测循环错误: {str(e)}")
-    #             time.sleep(3)  # 出错时稍等，但不要太久，保持主节奏
     def stop(self):
         self.running = False
+        # 停止前保存所有剩余数据
+        if self.batch_saver:
+            final_stats = self.batch_saver.flush_all()
+            self.status_update.emit(f"批量保存完成，保存了 {final_stats.get('conversations_saved', 0)} 个用户对话")
         self.status_update.emit("停止监控")
+
+    def get_douyin_id(self) -> str:
         try:
-            # 尽量不阻塞，快速关闭线程池
-            self._executor.shutdown(wait=False)
-        except Exception:
-            pass
+            import pyperclip
+            from time import sleep
+
+            # 使用正确的浏览器对象和定位方式
+            user_element = self.douyin_msg.tab.ele("xpath=//*[@id='layout-scroller']/div[3]/div/div/div[3]/div/div[1]/div[1]/div[1]/div[1]/div/span[2]")
+            # 清空剪贴板
+            pyperclip.copy("")
+            sleep(0.1)
+            
+            # 点击用户名元素以触发复制
+            try:
+                user_element.click()
+                print(f"[DEBUG] 成功点击用户名元素")
+            except Exception as e:
+                print(f"[DEBUG] 点击用户名元素失败: {e}")
+                return ""
+            
+            # 等待复制完成
+            sleep(0.5)
+            
+            # 从剪贴板读取
+            douyin_id = pyperclip.paste() or ""
+            douyin_id = douyin_id.strip()
+            
+            # 调试信息
+            print(f"[DEBUG] 剪贴板内容: '{douyin_id}'")
+            
+            return douyin_id
+        except Exception as e:
+            print(f"[DEBUG] 获取抖音ID失败: {e}")
+            return ""
+
 
     # 线程内工具方法（从组件中内联过来，避免属性不存在错误）
     def _thr_get_conversation_data(self, user_name: str) -> List[Dict]:
         try:
             message_elements = self.douyin_msg.tab.eles("xpath=//*[@class='leadsCsUI-MessageItem']")
-            # 仅抓取最近 N 条，减少单用户解析时间
-            try:
-                from config.system_config import Config as _Cfg
-                fetch_limit = getattr(_Cfg, 'CONVERSATION_FETCH_LIMIT', 100)
-            except Exception:
-                fetch_limit = 100
-            if isinstance(message_elements, list) and fetch_limit > 0:
-                message_elements = message_elements[-fetch_limit:]
             conversation_data = []
             for msg_element in message_elements:
                 try:
@@ -268,42 +292,37 @@ class MessageDetectionThread(QThread):
             print(f"获取对话数据失败: {e}")
             return []
 
-    def _enqueue_db_task(self, func, *args, **kwargs):
-        """将数据库写入任务加入线程池，超出上限时丢弃本次任务以防阻塞。"""
+    def _thr_save_conversation_to_batch(self, user_name: str, conversation_data: List[Dict], douyin_id: str = ""):
+        """使用批量保存器保存对话数据"""
         try:
-            # 清理已完成的任务
-            while self._pending_futures and self._pending_futures[0].done():
-                self._pending_futures.popleft()
-            if len(self._pending_futures) >= self._max_pending:
-                # 队列过多，跳过该任务，保持监控循环流畅
-                try:
-                    self.status_update.emit("数据库写入队列已满，跳过一次保存")
-                except Exception:
-                    pass
-                return
-            fut = self._executor.submit(func, *args, **kwargs)
-            self._pending_futures.append(fut)
+            if self.batch_saver:
+                self.batch_saver.add_conversation(user_name, conversation_data, douyin_id)
+                self.status_update.emit(f"已缓存 {user_name} 的对话数据 ({len(conversation_data)} 条消息)")
+            else:
+                # 回退到单个保存
+                self._thr_save_conversation_to_db(user_name, conversation_data, douyin_id)
         except Exception as e:
-            print(f"提交数据库任务失败: {e}")
+            print(f"批量保存对话数据失败: {e}")
+            self.status_update.emit(f"保存对话数据失败: {str(e)}")
 
-    def _thr_save_conversation_to_db(self, user_name: str, conversation_data: List[Dict]):
+    def _thr_save_conversation_to_db(self, user_name: str, conversation_data: List[Dict], douyin_id: str = ""):
+        """单个保存对话数据（备用方法）"""
         try:
-            if not getattr(self, '_db', None):
-                return
-            # 在线程池中执行保存并反馈结果
-            def _job(db, u, data):
-                try:
-                    ok = db.save_chat_conversation(u, data)
-                    if ok:
-                        self.status_update.emit(f"已保存 {u} 的对话数据 ({len(data)} 条消息)")
-                    else:
-                        self.status_update.emit(f"保存 {u} 的对话数据失败")
-                except Exception as ex:
-                    print(f"保存对话数据到数据库失败: {ex}")
-                    self.status_update.emit(f"保存对话数据失败: {str(ex)}")
-            self._enqueue_db_task(_job, self._db, user_name, conversation_data)
+            from database.mysql_pool_db import MySQLKeywordDBPool
+            from config.database_config import DatabaseConfig
+            config = DatabaseConfig.load_config() or DatabaseConfig.get_default_config()
+            db = MySQLKeywordDBPool(config)
+            if db.test_connection():
+                success = db.save_chat_conversation(user_name, conversation_data, douyin_id)
+                if success:
+                    self.status_update.emit(f"已保存 {user_name} 的对话数据 ({len(conversation_data)} 条消息)")
+                else:
+                    self.status_update.emit(f"保存 {user_name} 的对话数据失败")
+            else:
+                self.status_update.emit("数据库连接失败，无法保存对话数据")
         except Exception as e:
-            print(f"计划保存对话数据任务失败: {e}")
+            print(f"保存对话数据到数据库失败: {e}")
+            self.status_update.emit(f"保存对话数据失败: {str(e)}")
 
     def _thr_detect_violations_in_conversation(self, user_name: str, conversation_data: List[Dict]):
         try:
@@ -319,30 +338,40 @@ class MessageDetectionThread(QThread):
                             'timestamp': msg_data.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
                             'sender': msg_data.get('sender', 'A')
                         }
-                        self._thr_save_detection_record_to_db(detection_result)
+                        self._thr_save_detection_record_to_batch(detection_result)
                         self.message_detected.emit(detection_result)
                         self.status_update.emit(f"检测到违规内容: {user_name} ({msg_data.get('sender', 'A')}) - {message_text}")
         except Exception as e:
             print(f"检测对话违规内容失败: {e}")
 
-    def _thr_save_detection_record_to_db(self, detection_result: Dict):
+    def _thr_save_detection_record_to_batch(self, detection_result: Dict):
+        """使用批量保存器保存检测记录"""
         try:
-            if not getattr(self, '_db', None):
-                return
-            def _job(db, res: Dict):
-                try:
-                    matched_keywords = []
-                    for match in res['matches']:
-                        if hasattr(match.keyword, 'keyword'):
-                            matched_keywords.append({'keyword': match.keyword.keyword, 'type': match.keyword.type, 'match_type': match.match_type, 'start': match.start, 'end': match.end})
-                        else:
-                            matched_keywords.append({'keyword': str(match.keyword), 'type': 'unknown', 'match_type': match.match_type, 'start': match.start, 'end': match.end})
-                    db.add_detection_record(res['user'], res['message'], matched_keywords)
-                except Exception as ex:
-                    print(f"保存检测记录到数据库失败: {ex}")
-            self._enqueue_db_task(_job, self._db, detection_result)
+            if self.batch_saver:
+                self.batch_saver.add_detection(detection_result)
+            else:
+                # 回退到单个保存
+                self._thr_save_detection_record_to_db(detection_result)
         except Exception as e:
-            print(f"计划保存检测记录任务失败: {e}")
+            print(f"批量保存检测记录失败: {e}")
+
+    def _thr_save_detection_record_to_db(self, detection_result: Dict):
+        """单个保存检测记录（备用方法）"""
+        try:
+            from database.mysql_pool_db import MySQLKeywordDBPool
+            from config.database_config import DatabaseConfig
+            config = DatabaseConfig.load_config() or DatabaseConfig.get_default_config()
+            db = MySQLKeywordDBPool(config)
+            if db.test_connection():
+                matched_keywords = []
+                for match in detection_result['matches']:
+                    if hasattr(match.keyword, 'keyword'):
+                        matched_keywords.append({'keyword': match.keyword.keyword, 'type': match.keyword.type, 'match_type': match.match_type, 'start': match.start, 'end': match.end})
+                    else:
+                        matched_keywords.append({'keyword': str(match.keyword), 'type': 'unknown', 'match_type': match.match_type, 'start': match.start, 'end': match.end})
+                db.add_detection_record(detection_result['user'], detection_result['message'], matched_keywords)
+        except Exception as e:
+            print(f"保存检测记录到数据库失败: {e}")
 
 
 class MessageDetectionWidget(QWidget):
@@ -518,6 +547,12 @@ class MessageDetectionWidget(QWidget):
             self.detection_thread.stop()
             self.detection_thread.wait()
             self.detection_thread = None
+        
+        # 停止批量保存器
+        try:
+            stop_batch_saver()
+        except Exception as e:
+            print(f"停止批量保存器失败: {e}")
         
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)

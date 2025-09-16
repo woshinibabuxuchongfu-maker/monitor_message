@@ -26,7 +26,7 @@ class Config:
     DEFAULT_DOUYIN_URL = "https://leads.cluerich.com/pc/cs/chat/session?fullscreen=1"
     
     # 检测配置
-    DETECTION_INTERVAL = 15  # 检测间隔（秒）
+    DETECTION_INTERVAL = 10  # 检测间隔（秒）
     MAX_MESSAGE_LENGTH = 1000  # 最大消息长度
     
     # 界面配置

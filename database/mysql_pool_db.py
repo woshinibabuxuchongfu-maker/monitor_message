@@ -227,10 +227,12 @@ class MySQLKeywordDBPool:
                         CREATE TABLE IF NOT EXISTS detection_records (
                             id INT AUTO_INCREMENT PRIMARY KEY,
                             user_name VARCHAR(255),
+                            douyin_id VARCHAR(255) NULL,
                             message TEXT,
                             matched_keywords JSON,
                             detection_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             INDEX idx_user (user_name),
+                            INDEX idx_douyin_id (douyin_id),
                             INDEX idx_time (detection_time)
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                     ''')
@@ -240,16 +242,36 @@ class MySQLKeywordDBPool:
                         CREATE TABLE IF NOT EXISTS chat_conversations (
                             id INT AUTO_INCREMENT PRIMARY KEY,
                             user_name VARCHAR(255) NOT NULL,
+                            douyin_id VARCHAR(255) NULL,
                             conversation_data JSON NOT NULL,
                             message_count INT DEFAULT 0,
                             last_message_time TIMESTAMP NULL,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                             INDEX idx_user (user_name),
+                            INDEX idx_chat_douyin_id (douyin_id),
                             INDEX idx_last_message_time (last_message_time),
                             INDEX idx_created_at (created_at)
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                     ''')
+
+                    # 兼容已有表，尝试添加缺失字段（忽略失败）
+                    try:
+                        cursor.execute("ALTER TABLE detection_records ADD COLUMN douyin_id VARCHAR(255) NULL")
+                    except Exception:
+                        pass
+                    try:
+                        cursor.execute("ALTER TABLE detection_records ADD INDEX idx_douyin_id (douyin_id)")
+                    except Exception:
+                        pass
+                    try:
+                        cursor.execute("ALTER TABLE chat_conversations ADD COLUMN douyin_id VARCHAR(255) NULL")
+                    except Exception:
+                        pass
+                    try:
+                        cursor.execute("ALTER TABLE chat_conversations ADD INDEX idx_chat_douyin_id (douyin_id)")
+                    except Exception:
+                        pass
                     
                     conn.commit()
         except Exception as e:
@@ -525,7 +547,7 @@ class MySQLKeywordDBPool:
         if self.connection_pool:
             self.connection_pool.close_all()
 
-    def save_chat_conversation(self, user_name: str, conversation_data: List[Dict]) -> bool:
+    def save_chat_conversation(self, user_name: str, conversation_data: List[Dict], douyin_id: str = None) -> bool:
         """
         保存聊天对话
         :param user_name: 用户名
@@ -559,19 +581,33 @@ class MySQLKeywordDBPool:
                         # 按时间排序
                         merged_messages.sort(key=lambda x: x.get('timestamp', ''))
                         
-                        # 更新记录
-                        cursor.execute(
-                            "UPDATE chat_conversations SET conversation_data = %s, message_count = %s, last_message_time = %s WHERE user_name = %s",
-                            (json.dumps(merged_messages, ensure_ascii=False), len(merged_messages), 
-                             merged_messages[-1].get('timestamp') if merged_messages else None, user_name)
-                        )
+                        # 更新记录（包含抖音ID）
+                        if douyin_id:
+                            cursor.execute(
+                                "UPDATE chat_conversations SET conversation_data = %s, message_count = %s, last_message_time = %s, douyin_id = %s WHERE user_name = %s",
+                                (json.dumps(merged_messages, ensure_ascii=False), len(merged_messages), 
+                                 merged_messages[-1].get('timestamp') if merged_messages else None, douyin_id, user_name)
+                            )
+                        else:
+                            cursor.execute(
+                                "UPDATE chat_conversations SET conversation_data = %s, message_count = %s, last_message_time = %s WHERE user_name = %s",
+                                (json.dumps(merged_messages, ensure_ascii=False), len(merged_messages), 
+                                 merged_messages[-1].get('timestamp') if merged_messages else None, user_name)
+                            )
                     else:
-                        # 创建新记录
-                        cursor.execute(
-                            "INSERT INTO chat_conversations (user_name, conversation_data, message_count, last_message_time) VALUES (%s, %s, %s, %s)",
-                            (user_name, json.dumps(conversation_data, ensure_ascii=False), len(conversation_data),
-                             conversation_data[-1].get('timestamp') if conversation_data else None)
-                        )
+                        # 创建新记录（包含抖音ID）
+                        if douyin_id:
+                            cursor.execute(
+                                "INSERT INTO chat_conversations (user_name, douyin_id, conversation_data, message_count, last_message_time) VALUES (%s, %s, %s, %s, %s)",
+                                (user_name, douyin_id, json.dumps(conversation_data, ensure_ascii=False), len(conversation_data),
+                                 conversation_data[-1].get('timestamp') if conversation_data else None)
+                            )
+                        else:
+                            cursor.execute(
+                                "INSERT INTO chat_conversations (user_name, conversation_data, message_count, last_message_time) VALUES (%s, %s, %s, %s)",
+                                (user_name, json.dumps(conversation_data, ensure_ascii=False), len(conversation_data),
+                                 conversation_data[-1].get('timestamp') if conversation_data else None)
+                            )
                     
                     conn.commit()
                     return True
@@ -639,6 +675,39 @@ class MySQLKeywordDBPool:
             print(f"删除聊天对话失败: {e}")
             return False
 
+    def update_user_douyin_id(self, user_name: str, douyin_id: str) -> bool:
+        """
+        根据用户名更新聊天表中的 douyin_id 字段。
+        :param user_name: 用户名
+        :param douyin_id: 抖音ID
+        :return: 是否成功
+        """
+        try:
+            if not self.connection_pool:
+                return False
+
+            with self.connection_pool.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 先检查用户是否存在
+                    cursor.execute("SELECT id FROM chat_conversations WHERE user_name = %s", (user_name,))
+                    existing_record = cursor.fetchone()
+                    
+                    if existing_record:
+                        # 更新现有记录
+                        cursor.execute(
+                            "UPDATE chat_conversations SET douyin_id = %s WHERE user_name = %s",
+                            (douyin_id, user_name)
+                        )
+                        conn.commit()
+                        print(f"[DEBUG] 更新用户 {user_name} 的抖音ID为 {douyin_id}")
+                        return cursor.rowcount > 0
+                    else:
+                        print(f"[DEBUG] 用户 {user_name} 不存在于 chat_conversations 表中，无法更新抖音ID")
+                        return False
+        except Exception as e:
+            print(f"更新 douyin_id 失败: {e}")
+            return False
+
     def get_chat_statistics(self) -> Dict[str, Any]:
         """
         获取聊天对话统计信息
@@ -677,6 +746,140 @@ class MySQLKeywordDBPool:
         except Exception as e:
             print(f"获取聊天统计信息失败: {e}")
             return {}
+
+    def batch_save_chat_conversations(self, conversations_data: Dict[str, List[Dict]], user_to_douyin_id: Dict[str, str] = None) -> int:
+        """
+        批量保存聊天对话
+        :param conversations_data: 对话数据字典，格式为 {user_name: [conversation_data, ...], ...}
+        :param user_to_douyin_id: 用户到抖音ID的映射，格式为 {user_name: douyin_id, ...}
+        :return: 成功保存的用户数量
+        """
+        try:
+            if not self.connection_pool or not conversations_data:
+                return 0
+                
+            saved_count = 0
+            with self.connection_pool.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    for user_name, conversation_data in conversations_data.items():
+                        try:
+                            # 检查是否已存在该用户的对话记录
+                            cursor.execute("SELECT id, conversation_data FROM chat_conversations WHERE user_name = %s", (user_name,))
+                            existing_record = cursor.fetchone()
+                            
+                            if existing_record:
+                                # 更新现有记录
+                                existing_data = json.loads(existing_record[1]) if existing_record[1] else []
+                                
+                                # 合并对话数据，避免重复
+                                existing_messages = {msg.get('message', '') + str(msg.get('timestamp', '')): msg for msg in existing_data}
+                                new_messages = {msg.get('message', '') + str(msg.get('timestamp', '')): msg for msg in conversation_data}
+                                
+                                # 合并数据
+                                merged_messages = list(existing_messages.values())
+                                for key, msg in new_messages.items():
+                                    if key not in existing_messages:
+                                        merged_messages.append(msg)
+                                
+                                # 按时间排序
+                                merged_messages.sort(key=lambda x: x.get('timestamp', ''))
+                                
+                                # 更新记录（包含抖音ID）
+                                douyin_id = user_to_douyin_id.get(user_name) if user_to_douyin_id else None
+                                if douyin_id:
+                                    cursor.execute(
+                                        "UPDATE chat_conversations SET conversation_data = %s, message_count = %s, last_message_time = %s, douyin_id = %s WHERE user_name = %s",
+                                        (json.dumps(merged_messages, ensure_ascii=False), len(merged_messages), 
+                                         merged_messages[-1].get('timestamp') if merged_messages else None, douyin_id, user_name)
+                                    )
+                                else:
+                                    cursor.execute(
+                                        "UPDATE chat_conversations SET conversation_data = %s, message_count = %s, last_message_time = %s WHERE user_name = %s",
+                                        (json.dumps(merged_messages, ensure_ascii=False), len(merged_messages), 
+                                         merged_messages[-1].get('timestamp') if merged_messages else None, user_name)
+                                    )
+                            else:
+                                # 创建新记录（包含抖音ID）
+                                douyin_id = user_to_douyin_id.get(user_name) if user_to_douyin_id else None
+                                if douyin_id:
+                                    cursor.execute(
+                                        "INSERT INTO chat_conversations (user_name, douyin_id, conversation_data, message_count, last_message_time) VALUES (%s, %s, %s, %s, %s)",
+                                        (user_name, douyin_id, json.dumps(conversation_data, ensure_ascii=False), len(conversation_data),
+                                         conversation_data[-1].get('timestamp') if conversation_data else None)
+                                    )
+                                else:
+                                    cursor.execute(
+                                        "INSERT INTO chat_conversations (user_name, conversation_data, message_count, last_message_time) VALUES (%s, %s, %s, %s)",
+                                        (user_name, json.dumps(conversation_data, ensure_ascii=False), len(conversation_data),
+                                         conversation_data[-1].get('timestamp') if conversation_data else None)
+                                    )
+                            
+                            saved_count += 1
+                            
+                        except Exception as e:
+                            print(f"保存用户 {user_name} 的对话数据失败: {e}")
+                            continue
+                    
+                    conn.commit()
+                    return saved_count
+                    
+        except Exception as e:
+            print(f"批量保存聊天对话失败: {e}")
+            return 0
+
+    def batch_save_detection_records(self, detection_records: List[Dict]) -> int:
+        """
+        批量保存检测记录
+        :param detection_records: 检测记录列表
+        :return: 成功保存的记录数量
+        """
+        try:
+            if not self.connection_pool or not detection_records:
+                return 0
+                
+            saved_count = 0
+            with self.connection_pool.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    for detection_result in detection_records:
+                        try:
+                            # 准备匹配关键词数据
+                            matched_keywords = []
+                            for match in detection_result.get('matches', []):
+                                if hasattr(match.keyword, 'keyword'):
+                                    matched_keywords.append({
+                                        'keyword': match.keyword.keyword,
+                                        'type': match.keyword.type,
+                                        'match_type': match.match_type,
+                                        'start': match.start,
+                                        'end': match.end
+                                    })
+                                else:
+                                    matched_keywords.append({
+                                        'keyword': str(match.keyword),
+                                        'type': 'unknown',
+                                        'match_type': match.match_type,
+                                        'start': match.start,
+                                        'end': match.end
+                                    })
+                            
+                            # 插入检测记录
+                            cursor.execute(
+                                "INSERT INTO detection_records (user_name, message, matched_keywords) VALUES (%s, %s, %s)",
+                                (detection_result['user'], detection_result['message'], json.dumps(matched_keywords, ensure_ascii=False))
+                            )
+                            
+                            saved_count += 1
+                            
+                        except Exception as e:
+                            print(f"保存检测记录失败: {e}")
+                            continue
+                    
+                    conn.commit()
+                    return saved_count
+                    
+        except Exception as e:
+            print(f"批量保存检测记录失败: {e}")
+            return 0
 
     def __del__(self):
         """析构函数"""

@@ -116,8 +116,7 @@ class GetDouyinMsg:
         except Exception as e:
             print(f"获取用户消息失败: {e}")
             return []
-
-    36145340
+    
     def refresh_page(self):
         """刷新当前页面；若刷新失败则回退到重新打开URL"""
         try:
